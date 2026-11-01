@@ -211,8 +211,10 @@ async function sendPayEmail(o) {
 
 async function poll() {
   try {
-    const d = await gql(`query { orders(first: 25, sortKey: CREATED_AT, reverse: true, query: "financial_status:pending created_at:>-3d") {
-      nodes { id name email tags paymentGatewayNames totalOutstandingSet { shopMoney { amount } } } } }`);
+    const since = new Date(Date.now() - 3 * 864e5).toISOString();
+    const d = await gql(`query($q: String!) { orders(first: 25, sortKey: CREATED_AT, reverse: true, query: $q) {
+      nodes { id name email tags paymentGatewayNames totalOutstandingSet { shopMoney { amount } } } } }`,
+      { q: `financial_status:pending created_at:>'${since}'` });
     for (const o of d.orders.nodes) {
       const id = o.id.split('/').pop();
       const isUpi = (o.paymentGatewayNames || []).some(g => /upi/i.test(g));
