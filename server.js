@@ -121,9 +121,9 @@ app.get('/pay/:orderId', async (req, res) => {
     // keep the mapping on the Shopify order so the webhook can find it
     await gql(`mutation($id: ID!, $tags: [String!]!) { tagsAdd(id: $id, tags: $tags) { userErrors { message } } }`,
       { id: order.id, tags: [`pz-${pz.order_id}`] });
-    if (pz.payment_url) return res.redirect(pz.payment_url);
-    let upi = '';
-    try { upi = new URL(pz.qr_image_url).searchParams.get('text') || ''; } catch {}
+    // always use our own unbranded page
+    let upi = pz.upi_link || '';
+    if (!upi) try { upi = new URL(pz.qr_image_url).searchParams.get('text') || ''; } catch {}
     if (!upi) upi = `upi://pay?pa=${encodeURIComponent(pz.receiving_upi)}&pn=GharGadgets&am=${Number(pz.payable_amount || amount).toFixed(2)}&cu=INR&tn=${pz.order_id}&tr=${pz.utr || ''}`;
     upi = upi.replace(/pn=Merchant/, 'pn=GharGadgets');
     const qr = `https://quickchart.io/qr?size=300&text=${encodeURIComponent(upi)}`;
