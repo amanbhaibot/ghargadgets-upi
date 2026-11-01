@@ -193,17 +193,18 @@ app.post('/webhooks/payzapi', express.raw({ type: '*/*' }), async (req, res) => 
 const form = (err = '') => `<!doctype html><meta name=viewport content="width=device-width,initial-scale=1">
 <title>Pay for your order</title><body style="font-family:system-ui;max-width:420px;margin:40px auto;padding:0 16px">
 <h2>Pay for your GharGadgets order</h2>${err ? `<p style="color:#c00">${err}</p>` : ''}
-<form method=post action="/pay"><p>Order number<br><input name=n required placeholder="1001" style="width:100%;padding:10px;font-size:16px"></p>
+<form method=post action="/pay"><p>Confirmation or order number<br><input name=n required placeholder="e.g. AB12CD34X or 1001" style="width:100%;padding:10px;font-size:16px"></p>
 <p>Email used at checkout<br><input name=e type=email required style="width:100%;padding:10px;font-size:16px"></p>
 <button style="width:100%;padding:14px;background:#1a73e8;color:#fff;border:0;border-radius:6px;font-size:16px">Pay now via UPI</button></form></body>`;
 app.get('/pay', (_, res) => res.send(form()));
 app.post('/pay', express.urlencoded({ extended: false }), async (req, res) => {
   try {
-    const n = String(req.body.n || '').replace(/[^0-9A-Za-z-]/g, ''), e = String(req.body.e || '').trim().toLowerCase();
-    const d = await gql(`query($q: String!) { orders(first: 5, query: $q) { nodes { id name email } } }`, { q: `name:${n}` });
-    const o = d.orders.nodes.find(x => x.name.replace('#', '') === n && (x.email || '').toLowerCase() === e);
+    const n = String(req.body.n || '').replace(/[^0-9A-Za-z-]/g, '').toUpperCase(), e = String(req.body.e || '').trim().toLowerCase();
+    const d = await gql(`query($q: String!) { orders(first: 20, sortKey: CREATED_AT, reverse: true, query: $q) { nodes { id name email confirmationNumber } } }`, { q: `email:${e}` });
+    const o = d.orders.nodes.find(x => (x.email || '').toLowerCase() === e &&
+      (x.name.replace('#', '').toUpperCase() === n || String(x.confirmationNumber || '').toUpperCase() === n));
     if (!o) return res.send(form('No order found with that number and email.'));
-    res.redirect(`/pay/${o.id.split('/').pop()}?n=${n}`);
+    res.redirect(`/pay/${o.id.split('/').pop()}?n=${o.name.replace('#', '')}`);
   } catch (err) { console.error('[pay-form]', err.message); res.send(form('Something went wrong, please try again.')); }
 });
 
