@@ -86,7 +86,7 @@ async function pzCreate(body) {
     body: JSON.stringify(body),
   });
   const j = await res.json();
-  if (!j.order_id || !j.payment_url) throw new Error('PayZapi create: ' + JSON.stringify(j));
+  if (!j.order_id || !(j.payment_url || j.qr_image_url)) throw new Error('PayZapi create: ' + JSON.stringify(j));
   return j;
 }
 async function pzCheck(pzOrderId) {
@@ -121,11 +121,27 @@ app.get('/pay/:orderId', async (req, res) => {
     // keep the mapping on the Shopify order so the webhook can find it
     await gql(`mutation($id: ID!, $tags: [String!]!) { tagsAdd(id: $id, tags: $tags) { userErrors { message } } }`,
       { id: order.id, tags: [`pz-${pz.order_id}`] });
-    res.redirect(pz.payment_url);
+    if (pz.payment_url) return res.redirect(pz.payment_url);
+    let upi = '';
+    try { upi = new URL(pz.qr_image_url).searchParams.get('text') || ''; } catch {}
+    if (!upi) upi = `upi://pay?pa=${encodeURIComponent(pz.receiving_upi)}&pn=GharGadgets&am=${Number(pz.payable_amount || amount).toFixed(2)}&cu=INR&tn=${pz.order_id}&tr=${pz.utr || ''}`;
+    upi = upi.replace(/pn=Merchant/, 'pn=GharGadgets');
+    const qr = `https://quickchart.io/qr?size=300&text=${encodeURIComponent(upi)}`;
+    res.send(`<!doctype html><meta name=viewport content="width=device-width,initial-scale=1"><title>Pay ₹${pz.payable_amount || amount}</title>
+<body style="font-family:system-ui;max-width:420px;margin:30px auto;padding:0 16px;text-align:center">
+<h2>Pay ₹${pz.payable_amount || amount}</h2><p>GharGadgets order ${order.name}</p>
+<a href="${upi}" style="display:block;background:#1a73e8;color:#fff;padding:16px;border-radius:8px;text-decoration:none;font-weight:bold;font-size:18px">Pay with UPI app</a>
+<p style="color:#555">GPay, PhonePe, Paytm. Pay the exact amount shown.</p><p>or scan this QR from another phone</p><img src="${qr}" width=240 height=240 alt="UPI QR">
+<p id=s style="color:#777">Waiting for payment…</p>
+<script>setInterval(async()=>{try{const r=await fetch('/status/${pz.order_id}');const j=await r.json();if(j.paid){document.getElementById('s').textContent='Paid! Confirming your order…';location.href='/return/${id}/${pz.order_id}'}}catch(e){}},5000)</script></body>`);
   } catch (e) {
     console.error('[pay]', e.message);
     res.status(500).send(page('Payment link error', 'Something went wrong. Please try again in a minute or contact us on Instagram @ghargadgets_in.'));
   }
+});
+
+app.get('/status/:pzId', async (req, res) => {
+  try { res.json({ paid: isPaid(await pzCheck(req.params.pzId)) }); } catch { res.json({ paid: false }); }
 });
 
 // After paying, PayZapi redirects here; double-check and send customer to their Shopify order page.
