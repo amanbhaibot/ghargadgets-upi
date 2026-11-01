@@ -55,7 +55,7 @@ async function getOrder(id) {
   const d = await gql(`query($id: ID!) { order(id: $id) {
       id name email displayFinancialStatus cancelledAt statusPageUrl tags
       totalOutstandingSet { shopMoney { amount currencyCode } }
-      customer { firstName lastName } } }`, { id: `gid://shopify/Order/${id}` });
+      } }`, { id: `gid://shopify/Order/${id}` });
   return d.order;
 }
 
@@ -112,7 +112,7 @@ app.get('/pay/:orderId', async (req, res) => {
       amount,
       payment_provider: PAYZAPI_PROVIDER,
       client_order_id: `SHOP-${id}-${Date.now()}`,
-      customer_name: [order.customer?.firstName, order.customer?.lastName].filter(Boolean).join(' ') || 'Customer',
+      customer_name: 'GharGadgets customer',
       customer_email: order.email || undefined,
       description: `GharGadgets order ${order.name}`,
       redirect_url: `${PUBLIC_URL}/return/${id}/__PZ__`,
@@ -242,7 +242,7 @@ async function poll() {
       }
       // 2) email the pay link once
       if (mailer && o.email && !o.tags.includes('upi-link-sent')) {
-        await sendPayEmail(o);
+        try { await sendPayEmail(o); } catch (e) { console.error('[email]', e.message); continue; }
         await gql(`mutation($id: ID!, $tags: [String!]!) { tagsAdd(id: $id, tags: $tags) { userErrors { message } } }`, { id: o.id, tags: ['upi-link-sent'] });
         console.log('[email] pay link sent for', o.name);
       }
