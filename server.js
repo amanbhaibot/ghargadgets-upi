@@ -1,6 +1,7 @@
 // GharGadgets UPI bridge: Shopify manual-payment orders -> PayZapi (FamPay UPI) -> mark order paid.
 import express from 'express';
 import crypto from 'node:crypto';
+import nodemailer from 'nodemailer';
 
 const {
   PORT = 3000,
@@ -13,6 +14,9 @@ const {
   PAYZAPI_PROVIDER = 'fampay',
   PUBLIC_URL,                    // e.g. https://ghargadgets-upi.onrender.com
   EXPIRY_MINUTES = '20',
+  GMAIL_USER,                    // sender for pay-link emails
+  GMAIL_APP_PASSWORD,
+  POLL_SECONDS = '60',
 } = process.env;
 
 const API_VERSION = '2025-10';
@@ -168,9 +172,70 @@ app.post('/webhooks/payzapi', express.raw({ type: '*/*' }), async (req, res) => 
   } catch (e) { console.error('[webhook]', e.message); }
 });
 
+
+// ---------- Find order by number (for the thank-you page instructions) ----------
+const form = (err = '') => `<!doctype html><meta name=viewport content="width=device-width,initial-scale=1">
+<title>Pay for your order</title><body style="font-family:system-ui;max-width:420px;margin:40px auto;padding:0 16px">
+<h2>Pay for your GharGadgets order</h2>${err ? `<p style="color:#c00">${err}</p>` : ''}
+<form method=post action="/pay"><p>Order number<br><input name=n required placeholder="1001" style="width:100%;padding:10px;font-size:16px"></p>
+<p>Email used at checkout<br><input name=e type=email required style="width:100%;padding:10px;font-size:16px"></p>
+<button style="width:100%;padding:14px;background:#1a73e8;color:#fff;border:0;border-radius:6px;font-size:16px">Pay now via UPI</button></form></body>`;
+app.get('/pay', (_, res) => res.send(form()));
+app.post('/pay', express.urlencoded({ extended: false }), async (req, res) => {
+  try {
+    const n = String(req.body.n || '').replace(/[^0-9A-Za-z-]/g, ''), e = String(req.body.e || '').trim().toLowerCase();
+    const d = await gql(`query($q: String!) { orders(first: 5, query: $q) { nodes { id name email } } }`, { q: `name:${n}` });
+    const o = d.orders.nodes.find(x => x.name.replace('#', '') === n && (x.email || '').toLowerCase() === e);
+    if (!o) return res.send(form('No order found with that number and email.'));
+    res.redirect(`/pay/${o.id.split('/').pop()}?n=${n}`);
+  } catch (err) { console.error('[pay-form]', err.message); res.send(form('Something went wrong, please try again.')); }
+});
+
+// ---------- Poller: email pay links for new UPI orders + confirm payments (webhook fallback) ----------
+const mailer = GMAIL_USER && GMAIL_APP_PASSWORD
+  ? nodemailer.createTransport({ service: 'gmail', auth: { user: GMAIL_USER, pass: GMAIL_APP_PASSWORD } }) : null;
+
+async function sendPayEmail(o) {
+  const id = o.id.split('/').pop(), n = o.name.replace('#', '');
+  const link = `${PUBLIC_URL}/pay/${id}?n=${n}`;
+  const amt = o.totalOutstandingSet.shopMoney.amount;
+  await mailer.sendMail({
+    from: `"GharGadgets" <${GMAIL_USER}>`, to: o.email,
+    subject: `Pay ₹${amt} for your GharGadgets order ${o.name}`,
+    html: `<div style="font-family:system-ui;max-width:480px;margin:auto;text-align:center">
+<h2>Thanks for your order ${o.name}!</h2><p>Complete your UPI payment of <b>₹${amt}</b> to confirm it. Paid orders ship early, with priority.</p>
+<p><a href="${link}" style="background:#1a73e8;color:#fff;padding:14px 28px;border-radius:6px;text-decoration:none;font-weight:bold;display:inline-block">Pay now via UPI</a></p>
+<p style="color:#777;font-size:13px">GPay, PhonePe or Paytm. Your order confirms automatically.</p></div>`,
+  });
+}
+
+async function poll() {
+  try {
+    const d = await gql(`query { orders(first: 25, sortKey: CREATED_AT, reverse: true, query: "financial_status:pending created_at:>-3d") {
+      nodes { id name email tags paymentGatewayNames totalOutstandingSet { shopMoney { amount } } } } }`);
+    for (const o of d.orders.nodes) {
+      const id = o.id.split('/').pop();
+      const isUpi = (o.paymentGatewayNames || []).some(g => /upi/i.test(g));
+      if (!isUpi) continue;
+      // 1) confirm any payment started through PayZapi
+      for (const t of o.tags.filter(t => t.startsWith('pz-'))) {
+        const st = await pzCheck(t.slice(3)).catch(() => null);
+        if (isPaid(st)) { st.order_id = st.order_id || t.slice(3); await markPaid(id, st).catch(e => console.error('[poll pay]', e.message)); break; }
+      }
+      // 2) email the pay link once
+      if (mailer && o.email && !o.tags.includes('upi-link-sent')) {
+        await sendPayEmail(o);
+        await gql(`mutation($id: ID!, $tags: [String!]!) { tagsAdd(id: $id, tags: $tags) { userErrors { message } } }`, { id: o.id, tags: ['upi-link-sent'] });
+        console.log('[email] pay link sent for', o.name);
+      }
+    }
+  } catch (e) { console.error('[poll]', e.message); }
+}
+setInterval(poll, Number(POLL_SECONDS) * 1000); setTimeout(poll, 5000);
+
 app.get('/', (_, res) => res.send('GharGadgets UPI bridge OK'));
 app.get('/health', async (_, res) => {
-  const out = { shop: SHOP, payzapiKey: !!PAYZAPI_API_KEY, webhookSecret: !!PAYZAPI_WEBHOOK_SECRET, publicUrl: PUBLIC_URL };
+  const out = { mailer: !!mailer, shop: SHOP, payzapiKey: !!PAYZAPI_API_KEY, webhookSecret: !!PAYZAPI_WEBHOOK_SECRET, publicUrl: PUBLIC_URL };
   try { await gql('{ shop { name } }'); out.shopify = 'ok'; } catch (e) { out.shopify = e.message.slice(0, 200); }
   res.json(out);
 });
