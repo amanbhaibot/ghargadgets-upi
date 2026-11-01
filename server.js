@@ -72,6 +72,9 @@ async function markPaid(orderId, pz) {
 }
 
 // ---------- PayZapi ----------
+const isPaid = (st) => !!st && st.ok !== false && (
+  ['paid', 'completed', 'success'].includes(String(st.status || st.data?.status).toLowerCase()) ||
+  ['VERIFIED', 'SUCCESS', 'PAID'].includes(String(st.verification_status || '').toUpperCase()));
 async function pzCreate(body) {
   const res = await fetch(`${PZ}/create`, {
     method: 'POST',
@@ -79,7 +82,7 @@ async function pzCreate(body) {
     body: JSON.stringify(body),
   });
   const j = await res.json();
-  if (!j.ok) throw new Error('PayZapi create: ' + JSON.stringify(j));
+  if (!j.order_id || !j.payment_url) throw new Error('PayZapi create: ' + JSON.stringify(j));
   return j;
 }
 async function pzCheck(pzOrderId) {
@@ -130,7 +133,7 @@ app.get('/return/:orderId/:pzId', async (req, res) => {
     if (pzId === '__PZ__') pzId = (order.tags || []).filter(t => t.startsWith('pz-')).pop()?.slice(3);
     if (pzId) {
       const st = await pzCheck(pzId);
-      if (st.ok && st.status === 'paid') await markPaid(orderId, st);
+      if (isPaid(st)) await markPaid(orderId, st);
     }
     res.redirect(order.statusPageUrl);
   } catch (e) {
@@ -152,12 +155,15 @@ app.post('/webhooks/payzapi', express.raw({ type: '*/*' }), async (req, res) => 
   if (!PAYZAPI_WEBHOOK_SECRET || !ok) return res.status(401).send('bad signature');
   let p; try { p = JSON.parse(req.body.toString()); } catch { return res.status(400).send('bad json'); }
   res.status(200).send('OK');
-  if (p.event !== 'order.paid' && p.status !== 'paid') return;
+  const pzId = p.order_id || p.data?.order_id;
+  const ev = String(p.event || ''), status = String(p.status || p.data?.status || '').toLowerCase();
+  if (!pzId || !(['order.paid', 'payment.completed'].includes(ev) || ['paid', 'completed'].includes(status))) return;
   try {
-    const st = await pzCheck(p.order_id);            // never trust the webhook alone
-    if (!(st.ok && st.status === 'paid')) return console.warn('[webhook] not paid on check', p.order_id);
-    const orderId = await findOrderByPz(p.order_id);
-    if (!orderId) return console.warn('[webhook] no Shopify order for', p.order_id);
+    const st = await pzCheck(pzId);            // never trust the webhook alone
+    if (!isPaid(st)) return console.warn('[webhook] not paid on check', pzId, st.status);
+    st.order_id = st.order_id || pzId;
+    const orderId = await findOrderByPz(pzId);
+    if (!orderId) return console.warn('[webhook] no Shopify order for', pzId);
     await markPaid(orderId, st);
   } catch (e) { console.error('[webhook]', e.message); }
 });
