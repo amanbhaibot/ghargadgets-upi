@@ -1,0 +1,10 @@
+{
+  "name": "ghargadgets-upi",
+  "version": "1.0.0",
+  "description": "Shopify <-> PayZapi (FamPay UPI) bridge for GharGadgets",
+  "main": "server.js",
+  "type": "module",
+  "engines": { "node": ">=20" },
+  "scripts": { "start": "node server.js" },
+  "dependencies": { "express": "^4.21.2" }
+}
